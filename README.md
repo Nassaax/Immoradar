@@ -248,6 +248,13 @@ biens différents).
    (à lancer depuis votre CI/CD ou manuellement contre `DIRECT_URL`).
 5. Le build Vercel exécute `prisma generate && next build` (voir
    `package.json > scripts.build`).
+6. Si le projet Vercel existait déjà avant cette migration (ex: ancien site
+   statique), vérifiez dans **Project Settings → Build and Deployment** que le
+   champ **Output Directory** n'a pas d'override manuel (ex: `public`) — cela
+   provoque l'erreur `No Output Directory named "public" found after the
+   Build completed`, car Next.js gère lui-même sa sortie (`.next/`) via le
+   builder Vercel. Désactivez l'override pour laisser Vercel utiliser le
+   comportement par défaut du framework détecté (`nextjs`).
 
 ## Limitations connues du MVP
 
