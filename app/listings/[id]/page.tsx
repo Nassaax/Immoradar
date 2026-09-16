@@ -90,13 +90,6 @@ export default async function ListingDetailPage({ params }: { params: { id: stri
           </table>
         </div>
 
-        {listing.description && (
-          <div className="card">
-            <h2>Description</h2>
-            <p style={{ whiteSpace: "pre-wrap" }}>{listing.description}</p>
-          </div>
-        )}
-
         {listing.priceHistory.length > 1 && (
           <div className="card">
             <h2>Historique de prix</h2>
