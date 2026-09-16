@@ -238,8 +238,10 @@ biens différents).
 2. Configurez les variables d'environnement (voir `.env.example`) dans
    Project Settings → Environment Variables.
 3. `vercel.json` déclare deux crons :
-   - `/api/cron/crawl` toutes les 2h,
+   - `/api/cron/crawl` tous les jours à 5h,
    - `/api/cron/alerts` tous les jours à 7h.
+   Le plan Vercel Hobby limite les cron jobs à une exécution par jour ; passez
+   au plan Pro si vous avez besoin d'un crawl plus fréquent (ex: `0 */2 * * *`).
    Vercel envoie automatiquement `Authorization: Bearer $CRON_SECRET` sur ces
    appels ; la route le vérifie si `CRON_SECRET` est défini.
 4. Exécutez les migrations en production : `npx prisma migrate deploy`
