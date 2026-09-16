@@ -1,0 +1,190 @@
+// ListingRadar — schéma Prisma
+// Voir README.md pour le contexte produit et les contraintes légales.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum ConnectorType {
+  SITEMAP
+  RSS
+  HTML_INDEX
+}
+
+enum SourceStatus {
+  ACTIVE // crawlée régulièrement
+  PAUSED // désactivée temporairement par un admin
+  UNSUPPORTED // robots.txt/CGU interdisent le crawl : source déclarée mais non crawlée
+}
+
+enum TransactionType {
+  SALE
+  RENT
+}
+
+enum CrawlRunStatus {
+  SUCCESS
+  PARTIAL // certaines annonces en erreur mais le run a produit des résultats
+  ERROR
+  SKIPPED_ROBOTS // robots.txt interdit l'accès
+  RATE_LIMITED // le run a été reporté pour respecter le rate limit
+}
+
+enum TakedownStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Une source = un site d'agence immobilière, avec sa méthode de collecte.
+model Source {
+  id            String        @id @default(cuid())
+  name          String
+  baseUrl       String
+  contactEmail  String? // contact connu de l'agence, utile pour un partenariat / opt-out
+  connectorType ConnectorType
+  /// Configuration spécifique au connecteur (ex: { "sitemapUrl": "...", "urlPattern": "..." }
+  /// ou { "feedUrl": "..." } ou { "indexUrl": "...", "selectors": {...} }). Validée par Zod
+  /// à l'exécution (voir lib/types.ts).
+  config        Json
+  status        SourceStatus  @default(ACTIVE)
+  /// true si robots.txt autorise explicitement le crawl des chemins utilisés par ce connecteur.
+  robotsAllowed Boolean       @default(true)
+  /// Score de confiance de la source (fraîcheur, taux d'erreur). 0..1
+  trustScore    Float         @default(1)
+  /// Délai minimum (ms) entre deux requêtes vers cette source. Surcharge la valeur globale.
+  minDelayMs    Int           @default(1000)
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  listings  Listing[]
+  crawlRuns CrawlRun[]
+
+  @@index([status])
+}
+
+/// Une annonce normalisée, rattachée à sa source d'origine.
+model Listing {
+  id String @id @default(cuid())
+
+  sourceId String
+  source   Source @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  /// URL canonique de l'annonce sur le site de l'agence (source de vérité, toujours affichée).
+  externalUrl String @unique
+
+  /// Empreinte de déduplication (adresse approx + surface + chambres + prix arrondi + titre normalisé).
+  /// Voir lib/fingerprint.ts. Les annonces partageant la même empreinte sont considérées comme le même bien.
+  fingerprint String
+
+  /// Si cette annonce est un doublon d'une autre, id de l'annonce canonique retenue pour l'affichage.
+  /// null si cette annonce EST la canonique (ou si elle est unique).
+  canonicalOfId String?
+
+  title           String
+  price           Int?
+  currency        String           @default("EUR")
+  city            String?
+  postalCode      String?
+  address         String?
+  bedrooms        Int?
+  bathrooms       Int?
+  livingArea      Int? // m²
+  plotArea        Int? // m²
+  propertyType    String? // maison, appartement, terrain, ...
+  transactionType TransactionType?
+  description     String?
+  /// Vignette optionnelle. Non peuplée par défaut : voir CRAWLER_CONTACT_EMAIL / config source `allowThumbnail`.
+  thumbnailUrl    String?
+
+  publishedAt DateTime? // date de publication annoncée par la source, si trouvable
+  firstSeenAt DateTime  @default(now()) // détectée pour la première fois par ListingRadar
+  lastSeenAt  DateTime  @default(now()) // dernière fois vue lors d'un crawl
+
+  /// true si l'annonce n'a plus été retrouvée lors des derniers crawls (probablement vendue/louée/retirée).
+  isRemoved Boolean @default(false)
+  /// true si masquée suite à une demande d'opt-out/retrait approuvée. Jamais republiée automatiquement.
+  isHidden  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  priceHistory     PriceHistoryEntry[]
+  takedownRequests TakedownRequest[]
+
+  @@index([sourceId])
+  @@index([fingerprint])
+  @@index([city])
+  @@index([transactionType])
+  @@index([firstSeenAt])
+  @@index([isHidden, isRemoved])
+}
+
+/// Historique léger des changements de prix détectés sur une annonce.
+model PriceHistoryEntry {
+  id         String   @id @default(cuid())
+  listingId  String
+  listing    Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  price      Int?
+  recordedAt DateTime @default(now())
+
+  @@index([listingId])
+}
+
+/// Journal d'exécution d'un crawl pour une source (observabilité, page "Source status").
+model CrawlRun {
+  id            String         @id @default(cuid())
+  sourceId      String
+  source        Source         @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  startedAt     DateTime       @default(now())
+  finishedAt    DateTime?
+  status        CrawlRunStatus
+  listingsFound Int            @default(0)
+  listingsNew   Int            @default(0)
+  errorMessage  String?
+  /// Logs structurés additionnels (durée, nombre de requêtes, etc.)
+  logJson       Json?
+
+  @@index([sourceId, startedAt])
+}
+
+/// Abonnement à une alerte email, géré via un token opaque (pas d'authentification au MVP).
+model AlertSubscription {
+  id         String    @id @default(cuid())
+  email      String
+  /// Token aléatoire (voir lib/token.ts) permettant de gérer/désinscrire l'alerte sans compte.
+  token      String    @unique
+  /// Critères de recherche sauvegardés : { city?, minPrice?, maxPrice?, bedrooms?, propertyType?, transactionType? }
+  filters    Json
+  active     Boolean   @default(true)
+  frequency  String    @default("daily")
+  lastSentAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([active])
+}
+
+/// Demande de retrait ("opt-out" / DMCA-like) émise par une agence ou un tiers.
+model TakedownRequest {
+  id             String         @id @default(cuid())
+  listingId      String?
+  listing        Listing?       @relation(fields: [listingId], references: [id], onDelete: SetNull)
+  url            String?
+  requesterEmail String
+  requesterName  String?
+  reason         String
+  status         TakedownStatus @default(PENDING)
+  adminNote      String?
+  createdAt      DateTime       @default(now())
+  resolvedAt     DateTime?
+
+  @@index([status])
+}
